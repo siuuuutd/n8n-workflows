@@ -6,30 +6,39 @@ import io
 
 app = Flask(__name__)
 
-# Global variable for the browser instance
+# Global variables to hold the single browser instance and a lock.
 browser = None
 playwright_instance = None
+browser_lock = asyncio.Lock()
 
-async def initialize_browser():
-    """Initialize the browser instance."""
+async def get_browser():
+    """
+    Initializes and returns a single, shared browser instance.
+    Uses a lock to prevent race conditions.
+    """
     global browser, playwright_instance
-    if not browser:
-        print("--- Initializing new browser instance ---")
-        playwright_instance = await async_playwright().start()
-        browser = await playwright_instance.chromium.launch(
-            headless=True,
-            args=[
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-                '--disable-gpu'
-            ]
-        )
-        print("--- Browser initialized successfully ---")
+    async with browser_lock:
+        if not browser or not browser.is_connected():
+            print("--- Initializing new browser instance ---")
+            if playwright_instance:
+                await playwright_instance.stop()
+            
+            playwright_instance = await async_playwright().start()
+            browser = await playwright_instance.chromium.launch(
+                headless=True,
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--single-process',
+                    '--disable-gpu'
+                ]
+            )
+            print("--- Browser initialized successfully ---")
+    return browser
 
 @app.route("/", methods=["GET"])
 def index():
@@ -37,48 +46,46 @@ def index():
     return jsonify({"status": "ok", "message": "Screenshot service is running."})
 
 @app.route("/screenshot", methods=["POST"])
-def take_screenshot():
-    """Takes a screenshot of a given URL."""
+def take_screenshot_route():
+    # This wrapper function is needed to run an async function from a sync Flask route.
+    return asyncio.run(handle_screenshot_request())
+
+async def handle_screenshot_request():
+    """
+    The actual async logic for taking a screenshot.
+    """
+    data = request.get_json()
+    if not data or "url" not in data:
+        return jsonify({"error": "URL is required"}), 400
+
+    url = data["url"]
+    print(f"--- Taking screenshot of: {url} ---")
     
-    async def async_screenshot():
-        global browser
-        if not browser:
-            await initialize_browser()
+    page = None
+    try:
+        b = await get_browser()
+        page = await b.new_page()
+        await page.set_viewport_size({"width": 1920, "height": 1080})
+        # Increased timeout for slow-loading pages
+        await page.goto(url, wait_until='networkidle', timeout=60000) 
+        
+        screenshot_bytes = await page.screenshot(type='png')
+        
+        return send_file(
+            io.BytesIO(screenshot_bytes),
+            mimetype='image/png',
+            as_attachment=True,
+            download_name='screenshot.png'
+        )
+    except Exception as e:
+        error_message = f"Failed to capture screenshot: {str(e)}"
+        print(f"--- ERROR: {error_message} ---")
+        return jsonify({"error": error_message}), 500
+    finally:
+        if page:
+            await page.close()
 
-        data = request.get_json()
-        if not data or "url" not in data:
-            return None, "URL is required"
-
-        url = data["url"]
-        print(f"--- Taking screenshot of: {url} ---")
-
-        page = None
-        try:
-            page = await browser.new_page()
-            await page.set_viewport_size({"width": 1920, "height": 1080})
-            await page.goto(url, wait_until='networkidle', timeout=30000)
-            screenshot_bytes = await page.screenshot(type='png')
-            return screenshot_bytes, None
-        except Exception as e:
-            print(f"Error: {str(e)}")
-            return None, str(e)
-        finally:
-            if page:
-                await page.close()
-
-    # Run the async function
-    screenshot_bytes, error = asyncio.run(async_screenshot())
-    
-    if error:
-        return jsonify({"error": error}), 500
-    
-    return send_file(
-        io.BytesIO(screenshot_bytes),
-        mimetype='image/png',
-        as_attachment=True,
-        download_name='screenshot.png'
-    )
-
-    if __name__ == '__main__':
+# The __main__ block is only for local testing, Gunicorn will not use it.
+if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=True)
