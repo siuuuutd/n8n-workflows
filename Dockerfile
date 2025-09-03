@@ -1,5 +1,25 @@
-FROM python:3.9.23-slim
-COPY . /app
+FROM python:3.11-slim
+
+# Install system dependencies for Playwright
+RUN apt-get update && apt-get install -y \
+    wget \
+    gnupg \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
-RUN pip install -r requirements.txt
-ENTRYPOINT ["python", "run.py", "--host", "0.0.0.0", "--port", "8000"]
+
+# Copy requirements and install Python packages
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Playwright browsers
+RUN playwright install chromium
+RUN playwright install-deps chromium
+
+# Copy application code
+COPY . .
+
+EXPOSE 8080
+
+CMD ["python", "main.py"]
