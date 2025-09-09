@@ -105,6 +105,7 @@ def start_server(host: str = "127.0.0.1", port: int = 8000, reload: bool = False
 
 def main():
     """Main entry point with command line arguments."""
+    sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(
         description="N8N Workflows Search Engine",
         formatter_class=argparse.RawDescriptionHelpFormatter,
